@@ -713,7 +713,9 @@ impl Store {
                 }
                 run.last_event_at = e.ts;
                 run.last_hook_event = e.hook_event.clone();
-                if e.message.is_some() {
+                // A message describes the state it arrived with; drop it when
+                // the state moves on (e.g. "needs permission" after approval).
+                if changed || e.message.is_some() {
                     run.last_message = e.message.clone();
                 }
                 if e.cwd.is_some() {
@@ -1014,6 +1016,10 @@ mod tests {
         let runs = s.agent_runs(i64::MAX / 2).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].state, AgentState::TurnEnded);
+        assert_eq!(
+            runs[0].last_message, None,
+            "stale approval text must not outlive the state"
+        );
     }
 
     #[test]
