@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Ghost May Cry (`ghostmc`): Rust workspace for a local-first control center over tmux sessions, Ghostty and CLI coding agents. Architecture, identities and the security model are in `docs/adr/0001-architecture.md`; read it before changing session matching, attach, hooks, IPC or remote access. Keep `MVP.md` evidence and `README.md` claims in sync with behavior.
+Ghost May Cry (`ghostmc`): Rust workspace for a local-first control center over tmux sessions, Ghostty and CLI coding agents. Architecture, identities and the security model are in `docs/adr/0001-architecture.md`; read it before changing session matching, attach, hooks, IPC or remote access. Keep `MVP.md` evidence and `README.md` claims in sync with behavior. `DEVLOG.md` is the newest-first change log: read its top entries for recent history and add one per checkpoint (what shipped, what was verified, what's open).
 
 ## Build and test
 
