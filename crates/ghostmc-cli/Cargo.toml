@@ -1,0 +1,28 @@
+[package]
+name = "ghostmc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ghostmc"
+path = "src/main.rs"
+
+[dependencies]
+ghostmc-core.workspace = true
+ghostmc-tmux.workspace = true
+ghostmc-protocol.workspace = true
+ghostmc-platform.workspace = true
+ghostmc-host.workspace = true
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+serde_json = "1.0.154"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

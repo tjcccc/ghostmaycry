@@ -1,0 +1,23 @@
+[package]
+name = "ghostmc-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+libc = "0.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
+tracing = "0.1.44"
+
+ghostmc-core.workspace = true
+ghostmc-tmux.workspace = true
+ghostmc-protocol.workspace = true
+ghostmc-platform.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

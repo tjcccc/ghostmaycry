@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# The GPUI desktop app pulls in a large graphics stack; keep it out of the
+# default build so the host/CLI build quickly on headless machines.
+default-members = [
+    "crates/ghostmc-core",
+    "crates/ghostmc-tmux",
+    "crates/ghostmc-protocol",
+    "crates/ghostmc-platform",
+    "crates/ghostmc-host",
+    "crates/ghostmc-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.88"
+repository = "https://github.com/tjcccc/ghostmaycry"
+
+[workspace.dependencies]
+ghostmc-core = { path = "crates/ghostmc-core" }
+ghostmc-tmux = { path = "crates/ghostmc-tmux" }
+ghostmc-protocol = { path = "crates/ghostmc-protocol" }
+ghostmc-platform = { path = "crates/ghostmc-platform" }
+ghostmc-host = { path = "crates/ghostmc-host" }

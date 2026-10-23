@@ -1,0 +1,15 @@
+[package]
+name = "ghostmc-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+ghostmc-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
