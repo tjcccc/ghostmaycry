@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::path::Path;
 
 /// Bump when adding a migration. Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const MIGRATIONS: &[&str] = &[
     // v1
@@ -99,6 +99,13 @@ const MIGRATIONS: &[&str] = &[
         last_message TEXT,
         UNIQUE (agent, agent_session_id)
     );
+    "#,
+    // v2: the agent's terminal, to link runs outside tmux to Ghostty tabs.
+    r#"
+    ALTER TABLE events ADD COLUMN tty TEXT;
+    ALTER TABLE events ADD COLUMN tty_pid INTEGER;
+    ALTER TABLE agent_runs ADD COLUMN tty TEXT;
+    ALTER TABLE agent_runs ADD COLUMN tty_pid INTEGER;
     "#,
 ];
 
@@ -658,8 +665,8 @@ impl Store {
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO events
              (id, dedupe_key, ts, agent, hook_event, agent_session_id, turn_id, cwd, tmux_socket,
-              tmux_server_pid, tmux_pane, token, detail, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+              tmux_server_pid, tmux_pane, token, detail, message, tty, tty_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 e.id.0,
                 e.dedupe_key,
@@ -674,7 +681,9 @@ impl Store {
                 e.tmux_pane,
                 e.token,
                 e.detail,
-                e.message
+                e.message,
+                e.tty,
+                e.tty_pid
             ],
         )?;
         if inserted == 0 {
@@ -729,6 +738,10 @@ impl Store {
                     run.tmux_pane = e.tmux_pane.clone().or(run.tmux_pane);
                     run.token = e.token.clone().or(run.token);
                 }
+                if e.tty.is_some() {
+                    run.tty = e.tty.clone();
+                    run.tty_pid = e.tty_pid;
+                }
                 (run, changed)
             }
             None => (
@@ -741,6 +754,8 @@ impl Store {
                     tmux_server_pid: e.tmux_server_pid,
                     tmux_pane: e.tmux_pane.clone(),
                     token: e.token.clone(),
+                    tty: e.tty.clone(),
+                    tty_pid: e.tty_pid,
                     attribution: e.attribution(),
                     state: new_state.unwrap_or(AgentState::Running),
                     state_since: e.ts,
@@ -754,8 +769,9 @@ impl Store {
         tx.execute(
             "INSERT OR REPLACE INTO agent_runs
              (id, agent, agent_session_id, cwd, tmux_socket, tmux_server_pid, tmux_pane, token,
-              attribution, state, state_since, last_event_at, last_hook_event, last_message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+              attribution, state, state_since, last_event_at, last_hook_event, last_message, tty,
+              tty_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 run.id.0,
                 run.agent.as_str(),
@@ -770,7 +786,9 @@ impl Store {
                 run.state_since,
                 run.last_event_at,
                 run.last_hook_event,
-                run.last_message
+                run.last_message,
+                run.tty,
+                run.tty_pid
             ],
         )?;
         tx.commit()?;
@@ -790,7 +808,7 @@ impl Store {
     pub fn recent_events(&self, limit: usize) -> Result<Vec<AgentEvent>> {
         let mut st = self.conn.prepare(
             "SELECT id, dedupe_key, ts, agent, hook_event, agent_session_id, turn_id, cwd, tmux_socket,
-                    tmux_server_pid, tmux_pane, token, detail, message
+                    tmux_server_pid, tmux_pane, token, detail, message, tty, tty_pid
              FROM events ORDER BY seq DESC LIMIT ?1",
         )?;
         let rows = st.query_map([limit as i64], |r| {
@@ -809,6 +827,8 @@ impl Store {
                 token: r.get(11)?,
                 detail: r.get(12)?,
                 message: r.get(13)?,
+                tty: r.get(14)?,
+                tty_pid: r.get(15)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -824,7 +844,7 @@ impl Store {
 
 const RUN_COLS: &str =
     "id, agent, agent_session_id, cwd, tmux_socket, tmux_server_pid, tmux_pane, token,
-    attribution, state, state_since, last_event_at, last_hook_event, last_message";
+    attribution, state, state_since, last_event_at, last_hook_event, last_message, tty, tty_pid";
 
 fn run_from_row(r: &Row) -> rusqlite::Result<AgentRun> {
     Ok(AgentRun {
@@ -842,6 +862,8 @@ fn run_from_row(r: &Row) -> rusqlite::Result<AgentRun> {
         last_event_at: r.get(11)?,
         last_hook_event: r.get(12)?,
         last_message: r.get(13)?,
+        tty: r.get(14)?,
+        tty_pid: r.get(15)?,
     })
 }
 
@@ -882,6 +904,57 @@ mod tests {
         Store::open(&p).unwrap();
         let s = Store::open(&p).unwrap();
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v1_database_upgrades_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.sqlite3");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(MIGRATIONS[0]).unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+            c.execute(
+                "INSERT INTO agent_runs (id, agent, agent_session_id, attribution, state,
+                 state_since, last_event_at, last_hook_event) VALUES
+                 ('run_1', 'claude', 'S', 'cwd_only', 'idle', 1, ?1, 'SessionStart')",
+                [now()],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        let runs = s.agent_runs(3600).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].tty, None);
+    }
+
+    #[test]
+    fn run_keeps_tty_when_later_events_lack_it() {
+        let mut s = store();
+        let env = HookEnv {
+            tty: Some("/dev/ttys004".into()),
+            tty_pid: Some(4242),
+            ..Default::default()
+        };
+        let p = json!({"session_id": "S", "hook_event_name": "SessionStart"});
+        s.ingest_event(&AgentEvent::from_hook(AgentKind::Claude, &p, &env, 1).unwrap())
+            .unwrap();
+        let p2 = json!({"session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash"});
+        let (run, _) = s
+            .ingest_event(
+                &AgentEvent::from_hook(AgentKind::Claude, &p2, &HookEnv::default(), 2).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let run = run.unwrap();
+        assert_eq!(run.tty.as_deref(), Some("/dev/ttys004"));
+        assert_eq!(run.tty_pid, Some(4242));
+        assert_eq!(s.recent_events(1).unwrap()[0].tty, None);
+        assert_eq!(
+            s.recent_events(2).unwrap()[1].tty.as_deref(),
+            Some("/dev/ttys004")
+        );
     }
 
     #[test]
@@ -1047,6 +1120,8 @@ mod tests {
             tmux: Some("/t/s,1,0".into()),
             tmux_pane: Some("%3".into()),
             token: None,
+            tty: None,
+            tty_pid: None,
         };
         s.ingest_event(&AgentEvent::from_hook(AgentKind::Codex, &p, &env, 1).unwrap())
             .unwrap();

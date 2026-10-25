@@ -27,7 +27,7 @@ pub struct ProtocolVersion {
     pub minor: u32,
 }
 
-pub const PROTOCOL: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
+pub const PROTOCOL: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
 
 impl ProtocolVersion {
     pub fn compatible_with(self, other: ProtocolVersion) -> bool {
@@ -208,13 +208,22 @@ pub enum Request {
     },
     AgentRuns {
         since_secs: Option<i64>,
+        /// Include the in-memory end-of-turn briefs (assistant text). Only
+        /// the local desktop asks; `ghostmc api` always clears it.
+        #[serde(default)]
+        briefs: bool,
     },
     RecentEvents {
         limit: Option<usize>,
     },
     /// Used by `ghostmc hook ingest` when the host is running.
     IngestEvent {
-        event: AgentEvent,
+        /// Boxed only to keep `Request` small; the wire format is unchanged.
+        event: Box<AgentEvent>,
+        /// End-of-turn brief from the same hook. The host keeps it in memory
+        /// only; it is never written to the registry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        brief: Option<String>,
     },
     GitStatus {
         location_id: String,
@@ -343,6 +352,9 @@ pub struct AgentView {
     /// Session the run was attributed to, with the evidence used.
     pub session_key: Option<String>,
     pub pane_id: Option<String>,
+    /// Short end-of-turn brief, when requested and the host still holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,7 +491,7 @@ mod tests {
         let s = serde_json::to_string(&e).unwrap();
         assert_eq!(
             s,
-            r#"{"id":7,"protocol":{"major":1,"minor":0},"method":"get_project","params":{"key":"x"}}"#
+            r#"{"id":7,"protocol":{"major":1,"minor":1},"method":"get_project","params":{"key":"x"}}"#
         );
         let unit = serde_json::to_string(&RequestEnvelope {
             id: 1,

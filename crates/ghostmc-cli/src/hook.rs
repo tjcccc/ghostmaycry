@@ -2,7 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use clap::{Subcommand, ValueEnum};
-use ghostmc_core::agent::{AgentEvent, AgentKind, HookEnv};
+use ghostmc_core::agent::{self, AgentEvent, AgentKind, HookEnv};
 use ghostmc_core::hooks;
 use ghostmc_protocol::*;
 use std::io::Read;
@@ -78,29 +78,36 @@ pub fn ingest_from_args(args: &[String]) {
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return;
     };
-    let Some(event) = AgentEvent::from_hook(
-        agent,
-        &payload,
-        &HookEnv::from_process_env(),
-        ghostmc_core::now(),
-    ) else {
+    let mut env = HookEnv::from_process_env();
+    let name = payload.get("hook_event_name").and_then(|v| v.as_str());
+    if name.is_some_and(agent::wants_tty)
+        && let Some((tty, pid)) = agent::controlling_tty()
+    {
+        env.tty = Some(tty);
+        env.tty_pid = Some(pid);
+    }
+    let Some(event) = AgentEvent::from_hook(agent, &payload, &env, ghostmc_core::now()) else {
         return;
     };
-    if send_to_host(&event).is_err()
+    // The brief is assistant text: only a running host may hold it, in
+    // memory. The direct-mode fallback stores the event alone.
+    let brief = agent::brief_from_hook(&payload);
+    if send_to_host(&event, brief).is_err()
         && let Ok(mut store) = ghostmc_core::store::Store::open_default()
     {
         let _ = store.ingest_event(&event);
     }
 }
 
-fn send_to_host(event: &AgentEvent) -> Result<(), ()> {
+fn send_to_host(event: &AgentEvent, brief: Option<String>) -> Result<(), ()> {
     let path = ghostmc_core::dirs::host_socket_path();
     let mut conn = ghostmc_host::client::HostConnection::connect(&path).map_err(|_| ())?;
     let env = RequestEnvelope {
         id: 1,
         protocol: PROTOCOL,
         request: Request::IngestEvent {
-            event: event.clone(),
+            event: Box::new(event.clone()),
+            brief,
         },
     };
     match conn.roundtrip(&env).map_err(|_| ())?.body {

@@ -282,6 +282,8 @@ fn hook_events_attach_agents_to_exact_panes() {
         tmux: Some(tmux_env),
         tmux_pane: Some(pane.clone()),
         token: None,
+        tty: None,
+        tty_pid: None,
     };
     let ev = |name: &str, extra: serde_json::Value, ts: i64| {
         let mut payload =
@@ -294,15 +296,27 @@ fn hook_events_attach_agents_to_exact_panes() {
     };
     let now = ghostmc_core::now();
     s.handle(Request::IngestEvent {
-        event: ev("UserPromptSubmit", json!({"prompt": "secret"}), now),
+        event: Box::new(ev("UserPromptSubmit", json!({"prompt": "secret"}), now)),
+        brief: None,
     })
     .unwrap();
     s.handle(Request::IngestEvent {
-        event: ev("PermissionRequest", json!({"tool_name": "Bash"}), now + 1),
+        event: Box::new(ev(
+            "PermissionRequest",
+            json!({"tool_name": "Bash"}),
+            now + 1,
+        )),
+        brief: None,
     })
     .unwrap();
 
-    let agents: Vec<AgentView> = call(&s, Request::AgentRuns { since_secs: None });
+    let agents: Vec<AgentView> = call(
+        &s,
+        Request::AgentRuns {
+            since_secs: None,
+            briefs: false,
+        },
+    );
     let a = agents
         .iter()
         .find(|a| a.run.agent_session_id == "claude-1")
@@ -327,7 +341,13 @@ fn hook_events_attach_agents_to_exact_panes() {
 
     // Kill the pane's session: the run becomes Disconnected, not "running".
     env.tmux(&["kill-session", "-t", &c.session.r#ref.session_id]);
-    let agents: Vec<AgentView> = call(&s, Request::AgentRuns { since_secs: None });
+    let agents: Vec<AgentView> = call(
+        &s,
+        Request::AgentRuns {
+            since_secs: None,
+            briefs: false,
+        },
+    );
     let a = agents
         .iter()
         .find(|a| a.run.agent_session_id == "claude-1")
@@ -548,4 +568,121 @@ fn read_only_api_guard() {
     );
     assert!(matches!(r.body, ResponseBody::Ok { .. }), "{r:?}");
     let _ = Path::new("");
+}
+
+#[test]
+fn briefs_stay_in_memory_and_only_when_asked() {
+    let Some(env) = Env::new() else { return };
+    let s = env.service();
+    let now = ghostmc_core::now();
+    let payload = json!({
+        "session_id": "c-brief", "hook_event_name": "Stop", "cwd": "/w",
+        "last_assistant_message": "pushed 411bb49 to dev"
+    });
+    let event =
+        AgentEvent::from_hook(AgentKind::Claude, &payload, &HookEnv::default(), now).unwrap();
+    s.handle(Request::IngestEvent {
+        event: Box::new(event),
+        brief: ghostmc_core::agent::brief_from_hook(&payload),
+    })
+    .unwrap();
+    let brief_of = |briefs| {
+        let v: Vec<AgentView> = call(
+            &s,
+            Request::AgentRuns {
+                since_secs: None,
+                briefs,
+            },
+        );
+        v.into_iter()
+            .find(|a| a.run.agent_session_id == "c-brief")
+            .unwrap()
+            .brief
+    };
+    assert_eq!(brief_of(true).as_deref(), Some("pushed 411bb49 to dev"));
+    assert_eq!(brief_of(false), None);
+    // A new prompt makes the brief stale.
+    let prompt = json!({"session_id": "c-brief", "hook_event_name": "UserPromptSubmit"});
+    s.handle(Request::IngestEvent {
+        event: Box::new(
+            AgentEvent::from_hook(AgentKind::Claude, &prompt, &HookEnv::default(), now + 1)
+                .unwrap(),
+        ),
+        brief: None,
+    })
+    .unwrap();
+    assert_eq!(brief_of(true), None);
+    s.handle(Request::IngestEvent {
+        event: Box::new(
+            AgentEvent::from_hook(AgentKind::Claude, &payload, &HookEnv::default(), now + 2)
+                .unwrap(),
+        ),
+        brief: ghostmc_core::agent::brief_from_hook(&payload),
+    })
+    .unwrap();
+    drop(s);
+    // Never written to the registry (database file and its WAL).
+    for name in ["db.sqlite3", "db.sqlite3-wal"] {
+        if let Ok(bytes) = std::fs::read(env.dir.path().join(name)) {
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains("411bb49"),
+                "{name}"
+            );
+        }
+    }
+
+    let s = env.service();
+    assert_eq!(
+        call::<Vec<AgentView>>(
+            &s,
+            Request::AgentRuns {
+                since_secs: None,
+                briefs: true
+            }
+        )
+        .into_iter()
+        .find(|a| a.run.agent_session_id == "c-brief")
+        .unwrap()
+        .brief,
+        None,
+        "a new host process starts without briefs"
+    );
+}
+
+#[test]
+fn run_whose_terminal_process_exited_is_disconnected() {
+    let Some(env) = Env::new() else { return };
+    let s = env.service();
+    let mut child = Command::new("true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    let now = ghostmc_core::now();
+    for (sid, pid) in [("tty-dead", dead), ("tty-live", std::process::id())] {
+        let hook_env = HookEnv {
+            tty: Some("/dev/ttys099".into()),
+            tty_pid: Some(pid),
+            ..Default::default()
+        };
+        let p = json!({"session_id": sid, "hook_event_name": "Stop", "cwd": "/w"});
+        s.handle(Request::IngestEvent {
+            event: Box::new(AgentEvent::from_hook(AgentKind::Claude, &p, &hook_env, now).unwrap()),
+            brief: None,
+        })
+        .unwrap();
+    }
+    let v: Vec<AgentView> = call(
+        &s,
+        Request::AgentRuns {
+            since_secs: None,
+            briefs: false,
+        },
+    );
+    let state = |sid: &str| {
+        v.iter()
+            .find(|a| a.run.agent_session_id == sid)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state("tty-dead"), AgentState::Disconnected);
+    assert_eq!(state("tty-live"), AgentState::TurnEnded);
 }

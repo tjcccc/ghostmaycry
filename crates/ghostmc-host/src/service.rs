@@ -1,7 +1,7 @@
 //! Request handling shared by the host daemon and direct mode.
 
 use crate::lock::FileLock;
-use ghostmc_core::agent::{AgentEvent, AgentRun, AgentState};
+use ghostmc_core::agent::{AgentEvent, AgentKind, AgentRun, AgentState};
 use ghostmc_core::config::Config;
 use ghostmc_core::matching::{self, Association, SessionFacts};
 use ghostmc_core::model::{ManagedSessionRecord, Project, ProjectLocation};
@@ -32,6 +32,9 @@ pub struct Service {
     counter: Mutex<u64>,
     changed: Condvar,
     notifier: Option<Notifier>,
+    /// End-of-turn briefs by (agent, agent session id). Assistant text: kept
+    /// in this process only, never stored, gone when the host exits.
+    briefs: Mutex<HashMap<(AgentKind, String), String>>,
 }
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -109,6 +112,7 @@ impl Service {
             counter: Mutex::new(0),
             changed: Condvar::new(),
             notifier: None,
+            briefs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -248,16 +252,26 @@ impl Service {
                 command,
             } => to_value(self.create_session(&location_id, intent, command)?),
             Request::AttachCommand { key, mode } => to_value(self.attach_command(&key, mode)?),
-            Request::AgentRuns { since_secs } => {
-                to_value(self.agent_views(since_secs.unwrap_or(DEFAULT_AGENT_WINDOW))?)
+            Request::AgentRuns { since_secs, briefs } => {
+                let mut views = self.agent_views(since_secs.unwrap_or(DEFAULT_AGENT_WINDOW))?;
+                if briefs {
+                    let held = self.briefs.lock().unwrap_or_else(|p| p.into_inner());
+                    for v in &mut views {
+                        v.brief = held
+                            .get(&(v.run.agent, v.run.agent_session_id.clone()))
+                            .cloned();
+                    }
+                }
+                to_value(views)
             }
             Request::RecentEvents { limit } => to_value(
                 self.store()
                     .recent_events(limit.unwrap_or(50).min(1000))
                     .map_err(store_err)?,
             ),
-            Request::IngestEvent { event } => {
+            Request::IngestEvent { event, brief } => {
                 self.ingest(&event)?;
+                self.hold_brief(&event, brief);
                 Ok(Value::Null)
             }
             Request::GitStatus { location_id } => {
@@ -941,7 +955,15 @@ impl Service {
         let now = ghostmc_core::now();
         let mut out = Vec::with_capacity(runs.len());
         for run in runs {
-            let (session_key, pane_id, pane_alive) = locate_run(live, &records, &run);
+            let (session_key, pane_id, mut pane_alive) = locate_run(live, &records, &run);
+            // Outside tmux the terminal's owning process is the liveness
+            // evidence: once it is gone, the run's tty may belong to a new tab.
+            if pane_alive.is_none()
+                && let Some(pid) = run.tty_pid
+                && !process_alive(pid)
+            {
+                pane_alive = Some(false);
+            }
             // Project: from the session's tag/record if verified, else the
             // location containing the agent's cwd (labelled unverified by
             // the run's attribution).
@@ -987,9 +1009,29 @@ impl Service {
                 project_name,
                 session_key,
                 pane_id,
+                brief: None,
             });
         }
         Ok(out)
+    }
+
+    /// Remember the latest brief of a session; a new prompt makes the old one
+    /// stale, and an ended session's is dropped.
+    fn hold_brief(&self, event: &AgentEvent, brief: Option<String>) {
+        let Some(sid) = &event.agent_session_id else {
+            return;
+        };
+        let key = (event.agent, sid.clone());
+        let mut held = self.briefs.lock().unwrap_or_else(|p| p.into_inner());
+        match (brief, event.hook_event.as_str()) {
+            (Some(b), _) => {
+                held.insert(key, b);
+            }
+            (None, "UserPromptSubmit" | "SessionEnd") => {
+                held.remove(&key);
+            }
+            _ => {}
+        }
     }
 
     /// Store an agent event; notify on attention-worthy transitions.
@@ -1063,6 +1105,15 @@ fn associate(l: &ProjectLocation, s: &ghostmc_tmux::Session) -> Option<Associati
 /// Find the live session/pane an agent run belongs to, using only verified
 /// evidence (session token, or tmux socket+server pid+pane from the hook
 /// environment). Returns (session key, pane id, pane alive).
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 checks existence only; EPERM means it exists but is not ours.
+    let ok = unsafe { libc::kill(pid, 0) } == 0;
+    ok || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 fn locate_run(
     live: &Live,
     records: &[ManagedSessionRecord],

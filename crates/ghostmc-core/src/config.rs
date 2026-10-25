@@ -11,6 +11,29 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub editor: EditorConfig,
     pub notifications: NotificationConfig,
+    pub desktop: DesktopConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DesktopConfig {
+    /// Folder the menu-bar app's `+` opens a new Ghostty window in (`~/`
+    /// allowed). Unset means the home directory.
+    pub new_terminal_dir: Option<String>,
+}
+
+impl DesktopConfig {
+    /// `new_terminal_dir` with `~` expanded, or the home directory.
+    pub fn new_terminal_dir(&self) -> Option<std::path::PathBuf> {
+        match self
+            .new_terminal_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+        {
+            Some(d) => Some(crate::paths::expand_tilde(d)),
+            None => ::dirs::home_dir(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +124,8 @@ pub enum ConfigError {
         path: String,
         source: toml::de::Error,
     },
+    #[error("editing {path}: {message}")]
+    Edit { path: String, message: String },
 }
 
 impl Config {
@@ -122,6 +147,51 @@ impl Config {
     pub fn load_default() -> Result<Self, ConfigError> {
         Self::load(&crate::dirs::config_path())
     }
+}
+
+/// Set `[desktop] new_terminal_dir` in the file at `path`, keeping the rest
+/// of the document (comments, order) as the user wrote it. Refuses a file
+/// that does not parse.
+pub fn set_new_terminal_dir(path: &Path, dir: &str) -> Result<(), ConfigError> {
+    let edit_err = |message: String| ConfigError::Edit {
+        path: path.display().to_string(),
+        message,
+    };
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| edit_err(e.to_string()))?;
+    let table = doc
+        .entry("desktop")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| edit_err("`desktop` is not a table".into()))?;
+    table["new_terminal_dir"] = toml_edit::value(dir);
+    let out = doc.to_string();
+    // Never write a file this version would then refuse to load.
+    toml::from_str::<Config>(&out).map_err(|e| edit_err(e.to_string()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, out)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|source| ConfigError::Io {
+            path: path.display().to_string(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -148,6 +218,31 @@ mod tests {
         assert_eq!(c.editor.command, vec!["zed"]);
         assert_eq!(c.tmux.sockets, vec!["work"]);
         assert_eq!(c.tmux.binary, "tmux");
+    }
+
+    #[test]
+    fn setting_new_terminal_dir_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("c.toml");
+        std::fs::write(&p, "# mine\n[editor]\ncommand = [\"zed\"] # keep\n").unwrap();
+        set_new_terminal_dir(&p, "~/stacks").unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# mine") && text.contains("# keep"), "{text}");
+        let c = Config::load(&p).unwrap();
+        assert_eq!(c.desktop.new_terminal_dir.as_deref(), Some("~/stacks"));
+        assert_eq!(c.editor.command, vec!["zed"]);
+        set_new_terminal_dir(&p, "/w").unwrap();
+        let c = Config::load(&p).unwrap();
+        assert_eq!(c.desktop.new_terminal_dir.as_deref(), Some("/w"));
+
+        let missing = dir.path().join("sub/new.toml");
+        set_new_terminal_dir(&missing, "/x").unwrap();
+        assert!(Config::load(&missing).is_ok());
+
+        let bad = dir.path().join("bad.toml");
+        std::fs::write(&bad, "[desktop\n").unwrap();
+        assert!(set_new_terminal_dir(&bad, "/x").is_err());
+        assert_eq!(std::fs::read_to_string(&bad).unwrap(), "[desktop\n");
     }
 
     #[test]

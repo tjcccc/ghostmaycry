@@ -6,7 +6,8 @@ run** (code exists; the platform wasn't available) · **⏳ deferred**
 Development environment for this kickoff: Ubuntu 24.04 (headless) in a cloud
 container, Rust 1.97, tmux 3.4, OpenSSH 9.6. No macOS machine, no Fedora
 desktop, no Ghostty install and no second physical device were available.
-Evidence below says which environment it comes from.
+Evidence below says which environment it comes from. v0.2.0 checks were run on
+macOS 27 (Apple silicon) with Ghostty 1.3.1, against a scratch `GHOSTMC_HOME`.
 
 ## Test inventory
 
@@ -31,7 +32,8 @@ macOS, but hasn't run yet because nothing has been pushed.
 |---|---|---|
 | Rust workspace, host independent of UI | ✅ | `ghostmc host run` serves the Unix socket; the CLI falls back to direct mode when no host is running (smoke test) |
 | GPUI desktop app on Linux | ✅ | Ran under Xvfb (X11, llvmpipe Vulkan) with real data: projects, sessions, diff, agents, live update with no user input after a hook event. Screenshots are in `docs/images/` |
-| GPUI desktop app on macOS | 🧪 | Same code. GPUI's macOS backend wasn't built here (no SDK) |
+| GPUI desktop app on macOS | ✅ | v0.2.0 menu-bar panel driven with real clicks and screenshots on macOS 27, Ghostty 1.3.1, scratch `GHOSTMC_HOME`. Checked: no Dock icon; the icon toggles the panel and an outside click closes it; a live Ghostty window appears as a workspace with its tabs and git branch; the right-click menu covers Pin, Rename (typed text including 测试, saved as a project) and Remove (with confirmation); the right card opens on a workspace click and closes on a second click; list and right card are separate cards sized to their content; the panel widens leftwards and shrinks back under the icon; a click in the gap between the cards closes the panel; on macOS 27 both cards render on Liquid Glass that follows them as they open, close and the window moves, and the right-click menu is a native `NSMenu` (system glass) whose Remove asks inline, Cancel tested (light appearance only; dark not checked); Settings; with the host running, a Claude row shows its state and end-of-turn brief, and the brief isn't in the DB or WAL. Not checked: `+` (opens a real window), IME composition, the icon dot, multiple displays |
+| Workspace grouping (Ghostty windows ↔ projects, agent ↔ tab) | ✅ (logic) | `workspace::tests` (7): live windows, saved projects claiming tabs, tty-verified vs. folder-only agents (and the folder match allowed when Ghostty reports no ttys), tmux tabs using the session's location, ordering and dismissal |
 | Fedora/Wayland run | 🧪 | Built and run on Ubuntu/X11 only |
 | Host as user service | 🟡 | systemd `--user` unit and LaunchAgent are generated (quoting tested); `systemctl --user` / `launchctl` weren't exercised in the container |
 | Resource use | ✅ (Linux) | Host idle: about 16 MB RSS and 0.0 % CPU over 10 minutes. Desktop figures are in "Performance" below |
@@ -44,7 +46,8 @@ macOS, but hasn't run yet because nothing has been pushed.
 | Device-specific locations, remote links | ✅ | `project link … --device`, used by `open --device` over SSH |
 | Git root, branch, linked-worktree detection | ✅ | `git::tests::detects_repo_and_worktree` |
 | Schema versioning, refuse newer DB | ✅ | `store::tests::refuses_newer_schema` |
-| Adding or editing projects in the desktop UI | ⏳ | the CLI covers it; GPUI has no stock text input and one was not built for this slice |
+| Saving, renaming, pinning, removing workspaces in the desktop UI | 🟡 | implemented (text input with IME support); not yet exercised by hand. Adding folders, notes and tags stays CLI-only |
+| Schema v2 (agent tty) upgrades a v1 database in place | ✅ | `store::tests::v1_database_upgrades_in_place` |
 
 ## 3. tmux sessions
 
@@ -62,8 +65,8 @@ macOS, but hasn't run yet because nothing has been pushed.
 
 | Item | Status | Evidence |
 |---|---|---|
-| macOS: list terminals (id, cwd, tty, pid), focus exact terminal, new window/tab with command + cwd | 🧪 | written against upstream `Ghostty.sdef`; values passed via argv; output parser tested. **Not run against a real Ghostty** |
-| tmux client ↔ Ghostty terminal by tty (no cwd guessing) | ✅ (logic) | `desktop::tests::tty_match_links_terminal_to_tmux_session` |
+| macOS: list terminals (id, cwd, tty, pid), focus exact terminal, new window/tab with command + cwd | 🟡 | Ghostty 1.3.1: `ghostmc ghostty` lists window, tab, terminal id and cwd, and `ghostmc focus <id>` focuses that exact terminal. Ghostty 1.3.1's dictionary has no `tty` or `pid`; the list script now reads them optionally (before, the whole listing failed). New window/tab not run |
+| tmux client ↔ Ghostty terminal by tty (no cwd guessing) | ✅ (logic) — inactive on Ghostty 1.3.1, which reports no tty | `desktop::tests::tty_match_links_terminal_to_tmux_session` |
 | Linux: new window via `ghostty +new-window -e …`, fallback spawn | 🧪 | Ghostty is not installed here. The missing-Ghostty error path was verified in the desktop app (red status-bar message, nothing else breaks) |
 | Linux: focus/list/new-tab disabled, not faked | ✅ | `linux_capabilities_are_honest`; UI shows the reason |
 | Custom terminal launcher | ✅ | `custom_terminal_receives_argv` |
@@ -86,6 +89,8 @@ macOS, but hasn't run yet because nothing has been pushed.
 | Ingest runs inside a tmux pane, token/pane attribution | ✅ | smoke test: hook run inside the managed pane → "verified (ghostmc session token)", pane `%0` |
 | States incl. needs-approval, turn-ended (≠ success), disconnected, stale | ✅ | `agent::tests`, `store::tests`, `hook_events_attach_agents_to_exact_panes` |
 | Prompts/assistant text never stored | ✅ | unit tests plus `grep` of the SQLite files after ingesting a prompt containing a secret |
+| End-of-turn brief held in host memory only | ✅ | `briefs_stay_in_memory_and_only_when_asked` (never in the database or WAL, cleared by a new prompt, absent after restart, only with `briefs: true`); direct-mode `hook ingest` with a brief left no trace on disk; `ghostmc api` clears `briefs` |
+| Agent terminal (tty) captured from the hook's ancestors | ✅ | real `ghostmc hook ingest` run from inside Claude Code recorded `/dev/ttys004`, the agent's terminal; `agent::tests::ps_tty_column_maps_to_device`; a run whose tty owner exited is Disconnected (`run_whose_terminal_process_exited_is_disconnected`), so a reused tty can't claim it |
 | Basic session/process info without hooks | ✅ | pane command and cwd shown for every session |
 | System notifications | 🟡 | host notifier implemented (Linux clickable via `notify-send --action`, macOS plain); no notification daemon in the container to display them |
 | Real Claude Code / Codex binaries firing hooks | 🧪 | payloads were simulated from the documented schemas |

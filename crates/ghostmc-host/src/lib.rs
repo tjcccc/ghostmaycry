@@ -13,6 +13,7 @@ pub mod lock;
 pub mod remote;
 pub mod server;
 pub mod service;
+pub mod workspace;
 
 pub use client::Backend;
 pub use service::Service;

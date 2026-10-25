@@ -14,16 +14,15 @@ tool. It is not affiliated with Ghostty or Devil May Cry, and it is not a
 terminal emulator, an IDE, a cloud service or an AI client. It works with
 tools you already use: **Ghostty**, **tmux**, **git**, **ssh**, your editor.
 
-![Desktop app: project sessions](docs/images/desktop-sessions.png)
-
 ## Status
 
-This is the first vertical slice. The project registry, tmux discovery, create,
-focus and reattach, remote attach over SSH, agent hooks, git and files, the CLI
-and a GPUI desktop app work and are tested. macOS-specific paths (Ghostty
-AppleScript, LaunchAgent) are implemented from Ghostty's published scripting
-dictionary but **have not been run on a Mac yet**. See [MVP.md](MVP.md) for
-what works, what is partial and what has not been tested, with evidence.
+This is an early version. The project registry, tmux discovery, create, focus
+and reattach, remote attach over SSH, agent hooks, git and files, the CLI and a
+GPUI desktop app work and are tested. On macOS the desktop app is a menu-bar
+panel (see below), checked on macOS 27 with Ghostty 1.3.1; the LaunchAgent has
+not been run on a Mac yet. See [docs/MVP.md](docs/MVP.md) for what works, what
+is partial and what has not been tested, with evidence, and
+[CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## How it fits together
 
@@ -58,6 +57,18 @@ brew install tmux
 cargo install --path crates/ghostmc-cli        # installs `ghostmc`
 cargo install --path crates/ghostmc-desktop    # installs `ghostmc-desktop`
 ```
+
+To get a double-clickable menu-bar app instead of the bare `ghostmc-desktop`
+binary, build the bundle and move it to Applications:
+
+```sh
+scripts/build_macos_app.sh                     # → target/macos/Ghost May Cry.app
+mv "target/macos/Ghost May Cry.app" /Applications/
+```
+
+It is signed ad hoc for this Mac (`SIGN_IDENTITY` picks a real identity), so
+macOS asks for Automation again after each rebuild. The `ghostmc` CLI is not
+inside the bundle; install it as above for hooks and the host.
 
 Ghostty 1.3 or newer is needed for AppleScript. The first time ghostmc focuses
 or opens a Ghostty window, macOS asks for Automation permission. You can change
@@ -137,10 +148,47 @@ ghostmc hook uninstall        # removes only ghostmc's hooks
 
 Installing hooks keeps your existing hooks and settings and writes a backup
 first. In Codex, approve the new hooks with `/hooks` before they run. ghostmc
-records event names, ids, the tmux pane and short notification texts. It never
-stores your prompts or the agent's replies. Agents started inside a session
+records event names, ids, the tmux pane, the agent's terminal and short
+notification texts. It never stores your prompts or the agent's replies. While
+the host runs, it keeps the first 600 characters of each agent's last reply in
+memory so the desktop panel can show it; that text is gone when the host
+stops and is never sent to other devices. Agents started inside a session
 that ghostmc created are linked to that session through a token, so the link
 is verified. For other agents, ghostmc labels how sure it is about the match.
+
+### Desktop panel (menu bar on macOS)
+
+`ghostmc-desktop` puts a ghost icon in the macOS menu bar (no Dock icon).
+Clicking it drops a panel down; clicking anywhere else closes it, and
+right-clicking the icon offers Quit. On Linux it opens as a normal window.
+
+- **Workspaces** on the left. A saved project is a workspace, and its rows are
+  its folders, each with the open Ghostty tabs working in it. Any other Ghostty
+  window shows up as a workspace named after its first tab. Each row shows the
+  repository folder, its git branch, and ✳ (Claude Code) or ◆ (Codex) when an
+  agent runs in that tab. A 🔔 marks a workspace whose agent finished or needs
+  approval since you last looked; the menu-bar icon then shows a dot.
+- **Click a row** to focus that Ghostty tab. A saved folder with no open tab
+  attaches its tmux session or opens a shell there. Nothing is ever typed into a
+  terminal.
+- **Click a workspace** to open a second card on the right with its agents, each with
+  its state and the start of its last reply; click the workspace again (or
+  press Escape) to close it. The panel opens with only the list. Both cards are
+  as tall as their content. On macOS 26 and later they sit on Liquid Glass
+  (`NSGlassEffectView`); older macOS and Linux get solid cards. Click an
+  agent to jump to its tab. **Settings** opens and closes the same way.
+  **Open / Focus terminal** and **Open Folder** (Finder) act on the workspace.
+- **Right-click a workspace** to Pin/Unpin, Rename or Remove it (a native menu
+  on macOS; Remove asks for confirmation inside the workspace). Pinning or
+  renaming an unsaved window saves it as a project with its tabs' folders.
+  Removing only drops it from the list; folders, tabs and sessions are left
+  alone.
+- **+** opens a new Ghostty window in the folder set under **Settings**
+  (`[desktop] new_terminal_dir` in `config.toml`, default: your home folder).
+
+An agent is tied to a tab by its terminal (tty) or tmux pane. When only its
+folder is known and exactly one tab is open there, the panel says "matched by
+folder".
 
 ### Background host and notifications
 
@@ -227,8 +275,13 @@ on_turn_end = true
 - A terminal that isn't running inside tmux can't be attached from another
   device. Start work you may want to continue elsewhere in a tmux session
   (`ghostmc new`).
-- The desktop app can't add or rename projects yet; use the CLI for that.
+- The desktop app saves, renames, pins and removes workspaces, but adding a
+  folder to a saved workspace or editing notes and tags needs the CLI.
 - Remote session creation is off. Create sessions on the device itself.
+- Ghostty 1.3.1 doesn't report a terminal's tty, so the panel can't tie a tab
+  to its tmux session or prove which tab an agent runs in. Agents are matched
+  by folder instead (shown as "matched by folder"), and only when exactly one
+  tab has that folder.
 - There is no live terminal view inside the dashboard. Attaching always opens a
   real terminal.
 - Anyone who can SSH into your account has full access, including typing into
@@ -245,7 +298,7 @@ crates/ghostmc-platform   Ghostty, editor, file manager, notifications
 crates/ghostmc-host       service, Unix-socket server, SSH remote client, desktop helpers
 crates/ghostmc-cli        the `ghostmc` binary
 crates/ghostmc-desktop    the GPUI app
-scripts/                  real-device verification
+scripts/                  real-device verification, macOS app bundle
 docs/adr/                 architecture decisions
 ```
 

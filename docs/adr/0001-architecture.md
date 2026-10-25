@@ -160,8 +160,22 @@ modified.
 - Stored per event: event name, agent session/turn ids, cwd, tmux socket,
   server pid and pane from `$TMUX`/`$TMUX_PANE`, the session token from
   `$GHOSTMC_SESSION_TOKEN`, a detail (notification type, tool name) and the
-  notification message truncated to 200 chars. **Prompts and assistant
-  messages are never stored** (tested).
+  notification message truncated to 200 chars, plus (schema v2) the agent's
+  controlling terminal: `hook ingest` walks up its ancestors with `ps` to the
+  first process with a tty, skipping the frequent tool events, and stores
+  that tty and the owning process's pid. Outside tmux that tty is the Ghostty
+  terminal's, so a run is tied to a tab by exact tty, but only while that
+  process lives: macOS reuses tty numbers, so a run whose tty owner exited
+  counts as disconnected (tested).
+  **Prompts and assistant messages are never stored** (tested).
+- End-of-turn brief (protocol 1.1): `Stop.last_assistant_message` (Claude
+  Code and Codex), cut to 600 chars in the hook process, is sent beside the
+  event in `IngestEvent.brief`. Only a running host keeps it, in memory, per
+  agent session; a new prompt or session end drops it, and so does a host
+  restart. The direct-mode fallback stores the event without it. It is
+  returned only for `AgentRuns { briefs: true }`, which `ghostmc api` always
+  clears, so other devices never receive it (tested: never in the SQLite file
+  or WAL).
 - Attribution evidence, strongest first: session token → tmux pane from the
   hook environment → cwd only (shown as "unverified"). Weaker evidence never
   overwrites stronger evidence.

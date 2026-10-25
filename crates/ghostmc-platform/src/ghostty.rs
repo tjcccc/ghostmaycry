@@ -106,7 +106,17 @@ on run argv
         set tidx to my safe(index of t)
         set tsel to my safe(selected of t)
         repeat with term in terminals of t
-          set out to out & wid & fs & tid & fs & tidx & fs & tsel & fs & my safe(id of term) & fs & my safe(name of term) & fs & my safe(working directory of term) & fs & my safe(tty of term) & fs & my safe(pid of term) & rs
+          -- tty and pid are not in every Ghostty's dictionary (1.3.1 lacks
+          -- them); reading a missing property throws before safe() runs.
+          set ttyv to ""
+          try
+            set ttyv to my safe(tty of term)
+          end try
+          set pidv to ""
+          try
+            set pidv to my safe(pid of term)
+          end try
+          set out to out & wid & fs & tid & fs & tidx & fs & tsel & fs & my safe(id of term) & fs & my safe(name of term) & fs & my safe(working directory of term) & fs & ttyv & fs & pidv & rs
         end repeat
       end repeat
     end repeat
@@ -138,7 +148,7 @@ on run argv
   tell application "Ghostty"
     activate
     set cfg to new surface configuration
-    set command of cfg to cmd
+    if cmd is not "" then set command of cfg to cmd
     if cwd is not "" then set initial working directory of cfg to cwd
     if mode is "tab" then
       if target is "" then
@@ -236,15 +246,13 @@ pub fn focus_terminal(cfg: &TerminalConfig, terminal_id: &str) -> Result<()> {
 }
 
 /// Open `argv` in a new Ghostty window/tab (or the configured terminal).
+/// An empty `argv` opens the user's shell.
 pub fn launch(
     cfg: &TerminalConfig,
     argv: &[String],
     cwd: Option<&str>,
     placement: &Placement,
 ) -> Result<Launched> {
-    if argv.is_empty() {
-        return Err(PlatformError::Failed("empty command".into()));
-    }
     if cfg.kind == "custom" {
         if cfg.custom.is_empty() {
             return Err(PlatformError::Failed(
@@ -252,6 +260,9 @@ pub fn launch(
             ));
         }
         let mut full = cfg.custom.clone();
+        if argv.is_empty() {
+            full.push(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
+        }
         full.extend_from_slice(argv);
         spawn_detached(&full, cwd)?;
         return Ok(Launched {
@@ -260,8 +271,13 @@ pub fn launch(
         });
     }
     if cfg!(target_os = "macos") {
-        // Ghostty runs a string `command` through the shell, so quote argv.
-        let cmd = ghostmc_core::shell::join(argv);
+        // Ghostty runs a string `command` through the shell, so quote argv;
+        // no command means Ghostty's default shell.
+        let cmd = if argv.is_empty() {
+            String::new()
+        } else {
+            ghostmc_core::shell::join(argv)
+        };
         let (mode, target) = match placement {
             Placement::NewWindow => ("window", String::new()),
             Placement::NewTab { window_id } => ("tab", window_id.clone().unwrap_or_default()),
@@ -289,8 +305,10 @@ fn linux_launch(cfg: &TerminalConfig, argv: &[String], cwd: Option<&str>) -> Res
     if let Some(d) = cwd {
         flags.push(format!("--working-directory={d}"));
     }
-    flags.push("-e".into());
-    flags.extend_from_slice(argv);
+    if !argv.is_empty() {
+        flags.push("-e".into());
+        flags.extend_from_slice(argv);
+    }
     if cfg.linux_mode == "new-window" {
         // Ask a running instance over D-Bus. `-e` makes every following
         // argument part of the command.

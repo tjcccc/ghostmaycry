@@ -252,17 +252,23 @@ fn run_api(allow_write: bool) -> Result<()> {
                 ),
             },
         },
-        Ok(env) => match backend.call_raw(env.request) {
-            Ok(mut r) => {
-                r.id = env.id;
-                r
+        Ok(mut env) => {
+            // Briefs are assistant text held for the local desktop only.
+            if let Request::AgentRuns { briefs, .. } = &mut env.request {
+                *briefs = false;
             }
-            Err(error) => ResponseEnvelope {
-                id: env.id,
-                protocol: PROTOCOL,
-                body: ResponseBody::Error { error },
-            },
-        },
+            match backend.call_raw(env.request) {
+                Ok(mut r) => {
+                    r.id = env.id;
+                    r
+                }
+                Err(error) => ResponseEnvelope {
+                    id: env.id,
+                    protocol: PROTOCOL,
+                    body: ResponseBody::Error { error },
+                },
+            }
+        }
         Err(e) => ResponseEnvelope {
             id: 0,
             protocol: PROTOCOL,
@@ -389,6 +395,7 @@ fn run(cli: Cli) -> Result<()> {
                 &b,
                 Request::AgentRuns {
                     since_secs: Some(hours * 3600),
+                    briefs: false,
                 },
             )?;
             if json {

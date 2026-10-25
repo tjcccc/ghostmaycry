@@ -4,7 +4,8 @@
 //! Hook payloads are untrusted, versioned by the agent, and may contain
 //! sensitive text. We keep only what the dashboard needs: event names,
 //! correlation ids and short notification messages. Prompts and assistant
-//! messages are never stored.
+//! messages are never stored; the short end-of-turn brief
+//! ([`brief_from_hook`]) is handed to the host in memory only.
 
 use crate::ids::*;
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,10 @@ pub struct HookEnv {
     pub tmux: Option<String>,
     pub tmux_pane: Option<String>,
     pub token: Option<String>,
+    /// Controlling terminal of the agent (see [`controlling_tty`]).
+    pub tty: Option<String>,
+    /// The process that owns `tty` (the agent, or its wrapper).
+    pub tty_pid: Option<u32>,
 }
 
 impl HookEnv {
@@ -129,6 +134,8 @@ impl HookEnv {
             tmux: get("TMUX"),
             tmux_pane: get("TMUX_PANE"),
             token: get("GHOSTMC_SESSION_TOKEN"),
+            tty: None,
+            tty_pid: None,
         }
     }
 
@@ -146,6 +153,67 @@ impl HookEnv {
 }
 
 const MAX_MESSAGE: usize = 200;
+const MAX_BRIEF: usize = 600;
+/// Ancestors searched for a controlling terminal: hook → shell → agent,
+/// plus wrappers such as `npx` or version managers.
+const MAX_TTY_HOPS: usize = 8;
+
+/// Whether to look up the agent's terminal for this event. Tool events are
+/// skipped: they are the most frequent and the terminal never changes within
+/// a session.
+pub fn wants_tty(hook_event: &str) -> bool {
+    !matches!(
+        hook_event,
+        "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+    )
+}
+
+/// The terminal device (`/dev/ttys003`, `/dev/pts/2`) of the nearest ancestor
+/// process that has one, and that process's pid. Agents start hooks without a
+/// controlling terminal, so the hook's own is usually empty; the agent's is
+/// the terminal it runs in. The pid lets readers tell a live run from a
+/// closed tab whose tty number was handed out again. Uses `ps` with argv only.
+pub fn controlling_tty() -> Option<(String, u32)> {
+    let mut pid = std::process::id();
+    for _ in 0..MAX_TTY_HOPS {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "ppid=,tty=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        let mut f = line.split_whitespace();
+        let ppid: u32 = f.next()?.parse().ok()?;
+        if let Some(tty) = f.next().and_then(tty_device) {
+            return Some((tty, pid));
+        }
+        if ppid <= 1 {
+            return None;
+        }
+        pid = ppid;
+    }
+    None
+}
+
+/// `ps` tty column → device path; `None` for "no terminal" (`??`, `?`, `-`).
+fn tty_device(col: &str) -> Option<String> {
+    let ok = !col.is_empty()
+        && col.chars().all(|c| c.is_ascii_alphanumeric() || c == '/')
+        && col.chars().any(|c| c.is_ascii_digit());
+    ok.then(|| format!("/dev/{col}"))
+}
+
+/// The agent's final message of a turn (`Stop.last_assistant_message`, sent
+/// by both Claude Code and Codex), cut to a short brief. Callers must keep it
+/// in memory only: it is assistant text.
+pub fn brief_from_hook(payload: &Value) -> Option<String> {
+    if payload.get("hook_event_name").and_then(Value::as_str) != Some("Stop") {
+        return None;
+    }
+    let text = str_field(payload, "last_assistant_message")?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| truncate(text, MAX_BRIEF))
+}
 
 /// A normalized, privacy-reduced hook observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +229,11 @@ pub struct AgentEvent {
     pub tmux_server_pid: Option<u32>,
     pub tmux_pane: Option<String>,
     pub token: Option<String>,
+    /// Controlling terminal of the agent, when looked up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tty: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tty_pid: Option<u32>,
     /// Claude `notification_type`, Codex/Claude `source`/`reason`, tool name.
     pub detail: Option<String>,
     /// Short human message (Claude `Notification.message`), truncated.
@@ -234,6 +307,8 @@ impl AgentEvent {
             tmux_server_pid,
             tmux_pane: env.tmux_pane.clone(),
             token: env.token.clone(),
+            tty: env.tty.clone(),
+            tty_pid: env.tty_pid,
             detail,
             message,
             dedupe_key,
@@ -282,6 +357,13 @@ pub struct AgentRun {
     pub tmux_server_pid: Option<u32>,
     pub tmux_pane: Option<String>,
     pub token: Option<String>,
+    /// Terminal the agent runs in. Outside tmux this is the Ghostty
+    /// terminal's tty; inside tmux it is the pane's. Only meaningful while
+    /// `tty_pid` is alive: tty numbers are reused.
+    #[serde(default)]
+    pub tty: Option<String>,
+    #[serde(default)]
+    pub tty_pid: Option<u32>,
     pub attribution: Attribution,
     pub state: AgentState,
     pub state_since: i64,
@@ -320,6 +402,8 @@ mod tests {
             tmux: Some("/tmp/tmux-501/default,4242,3".into()),
             tmux_pane: Some("%7".into()),
             token: None,
+            tty: None,
+            tty_pid: None,
         }
     }
 
@@ -363,8 +447,30 @@ mod tests {
         });
         let e = AgentEvent::from_hook(AgentKind::Codex, &p, &HookEnv::default(), 1).unwrap();
         assert_eq!(e.transition(), Some(AgentState::TurnEnded));
-        // Assistant text must not be retained.
+        // Assistant text never enters the stored event; only the separate
+        // in-memory brief carries it.
         assert!(!serde_json::to_string(&e).unwrap().contains("secret"));
+        assert_eq!(brief_from_hook(&p).as_deref(), Some("secret details"));
+    }
+
+    #[test]
+    fn brief_only_from_stop_and_truncated() {
+        let p = json!({"hook_event_name": "Notification", "last_assistant_message": "x"});
+        assert_eq!(brief_from_hook(&p), None);
+        let p = json!({"hook_event_name": "Stop", "last_assistant_message": "  "});
+        assert_eq!(brief_from_hook(&p), None);
+        let p = json!({"hook_event_name": "Stop", "last_assistant_message": "y".repeat(5000)});
+        assert_eq!(brief_from_hook(&p).unwrap().chars().count(), MAX_BRIEF + 1);
+    }
+
+    #[test]
+    fn ps_tty_column_maps_to_device() {
+        assert_eq!(tty_device("ttys004").as_deref(), Some("/dev/ttys004"));
+        assert_eq!(tty_device("pts/3").as_deref(), Some("/dev/pts/3"));
+        assert_eq!(tty_device("??"), None);
+        assert_eq!(tty_device("?"), None);
+        assert_eq!(tty_device("-"), None);
+        assert_eq!(tty_device("../x1"), None);
     }
 
     #[test]
@@ -411,6 +517,8 @@ mod tests {
             tmux_server_pid: None,
             tmux_pane: None,
             token: None,
+            tty: None,
+            tty_pid: None,
             attribution: Attribution::CwdOnly,
             state: AgentState::Running,
             state_since: 0,
