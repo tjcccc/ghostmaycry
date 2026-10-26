@@ -7,6 +7,7 @@ Ghost May Cry (`ghostmc`): Rust workspace for a local-first control center over 
 - `cargo build` / `cargo test` cover the default members only. The GPUI app is excluded on purpose; use `cargo build -p ghostmc-desktop` or `--workspace` when touching it.
 - `Cargo.lock` pins `libc` to 0.2.186: GPUI 0.2.2's `xattr` breaks on newer `libc`. Never run a blanket `cargo update`; after any dependency change, re-run `cargo update -p libc --precise 0.2.186` if needed and confirm `cargo build -p ghostmc-desktop`.
 - tmux tests use private sockets and must never touch the user's default server. Manual runs: set `GHOSTMC_HOME` and `TMUX_TMPDIR` to scratch dirs.
+- Never exec Ghostty or another GUI app directly from an agent shell (`nohup …/ghostty &`): it keeps that shell's env (`CLAUDE_CODE_CHILD_SESSION`, scratch `GHOSTMC_HOME`) for every window it opens, so Claude started there stops saving transcripts. Use `open -a Ghostty`, which launches it through LaunchServices with a clean env.
 - Remote attach changes: run `scripts/verify_remote_attach.py --device <name>` (works against `ssh localhost`) and record the result in `docs/MVP.md`.
 - Gate before committing: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
 
