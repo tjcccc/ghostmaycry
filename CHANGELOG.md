@@ -4,6 +4,12 @@ User-facing changes in each version of Ghost May Cry, newest first. The detailed
 
 The `ghostmc` CLI, the host and the desktop app share one registry, so update them together.
 
+## [0.2.1] - 2026-10-26
+
+### Fixed
+
+- Claude Code or Codex started in a tmux session that ghostmc created now starts as a normal session, even when ghostmc was run from inside another agent's terminal. Before, Claude Code there believed it was a subagent and saved no transcript, so the session never showed up in its history. The same holds for terminals ghostmc launches directly (Linux and custom terminals).
+
 ## [0.2.0] - 2026-10-25
 
 ### Added

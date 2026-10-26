@@ -292,6 +292,8 @@ fn main() {
         hook::ingest_from_args(&args[3..]);
         return;
     }
+    // SAFETY: no other thread exists yet.
+    unsafe { ghostmc_core::agent::clear_session_env() };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("GHOSTMC_LOG")

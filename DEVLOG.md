@@ -2,6 +2,13 @@
 
 Cross-session development log. Newest first. Keep entries short: what shipped, what was verified, what's open.
 
+## 2026-10-26 — v0.2.1 — Agent session env no longer leaks into launched agents
+
+- **Bug.** A Claude Code started from the panel in Ghostty warned "Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker" and its session never appeared in history. Cause: the v0.2 visual check started Ghostty with `nohup` from an agent shell, so Ghostty, and every shell it opened, carried that session's `CLAUDE_CODE_*` (and the scratch `GHOSTMC_HOME=home`). Fixed for the user by restarting Ghostty; `CLAUDE.md` now says to use `open -a Ghostty`.
+- **Hardening.** `ghostmc_core::agent::clear_session_env` removes `SESSION_ENV_VARS` (Claude Code's session markers, plus Codex's `CODEX_THREAD_ID`, `CODEX_TOOL_CALL_ID`, `CODEX_SANDBOX*` and `CODEX_CI`, read from the installed Codex binary) at the start of the CLI (after the `hook ingest` early return) and the desktop app. User configuration such as `CODEX_HOME` and `CLAUDE_CODE_PLUGIN_DIRS` stays. tmux servers, Linux and custom terminals started by ghostmc now begin clean.
+- Validation: new `ghostmc-cli/tests/session_env.rs` runs `ghostmc project add` and `ghostmc new` with the markers set, on a private `TMUX_TMPDIR`, and checks the new server's global env: markers gone, `CODEX_HOME` kept. It fails with the scrub disabled. fmt, workspace clippy and `cargo test --workspace --locked` (92) pass; `libc` still 0.2.186.
+- Open: on macOS, Ghostty windows opened over AppleScript take Ghostty's own env, so a Ghostty started from an agent shell still leaks; only the `CLAUDE.md` rule guards that. A tmux server already started from an agent shell keeps its global env until it restarts (`new-session -e` can't unset). The marker list follows today's Claude Code and Codex; new markers need adding.
+
 ## 2026-10-25 — v0.2.0 — Menu-bar panel, workspaces, agent briefs
 
 - **Desktop redesign.** The four-tab window is gone, replaced by a menu-bar panel on macOS (a normal window on Linux) with a workspace list on the left and the selected workspace's agents on the right. Right-click a workspace to Pin, Rename (new IME-capable text input) or Remove it; `+` opens Ghostty in `[desktop] new_terminal_dir`; Settings sets that folder and offers Quit. The panel follows the light/dark appearance. The status item is `objc2` (already in GPUI's tree, only features added); the icon is Font Awesome Free's ghost (CC BY 4.0), rendered with `resvg` as a template image, with a dot for news.

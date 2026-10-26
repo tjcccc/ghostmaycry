@@ -28,6 +28,8 @@ use view::Root;
 type Panel = Rc<RefCell<Option<WindowHandle<Root>>>>;
 
 fn main() {
+    // SAFETY: no other thread exists yet.
+    unsafe { ghostmc_core::agent::clear_session_env() };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let backend = match ghostmc_host::Backend::connect_or_direct() {
         Ok(b) => b,

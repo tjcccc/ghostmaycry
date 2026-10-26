@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "ghostmc-core",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-platform"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ghostmc-core",
  "serde",
@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ghostmc-core",
  "ghostmc-platform",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "ghostmc-tmux"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "serde",

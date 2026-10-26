@@ -195,6 +195,44 @@ pub fn controlling_tty() -> Option<(String, u32)> {
     None
 }
 
+/// Variables an agent sets on the processes it runs to mark them as part of
+/// its session. Anything ghostmc starts would inherit them when ghostmc itself
+/// runs from an agent's shell: Claude Code started with
+/// `CLAUDE_CODE_CHILD_SESSION` acts as a subagent and saves no transcript.
+/// User configuration (`CODEX_HOME`, `CLAUDE_CODE_PLUGIN_DIRS`, ...) is not
+/// listed and stays.
+pub const SESSION_ENV_VARS: &[&str] = &[
+    "AI_AGENT",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_PID",
+    "CODEX_CI",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_THREAD_ID",
+    "CODEX_TOOL_CALL_ID",
+];
+
+/// Remove [`SESSION_ENV_VARS`] from this process, so the tmux servers,
+/// terminals and agents it starts begin outside any agent's session.
+///
+/// # Safety
+///
+/// Changes the process environment: call it first thing in `main`, before
+/// any other thread exists.
+pub unsafe fn clear_session_env() {
+    for var in SESSION_ENV_VARS {
+        // SAFETY: the caller guarantees no other thread is running.
+        unsafe { std::env::remove_var(var) };
+    }
+}
+
 /// `ps` tty column → device path; `None` for "no terminal" (`??`, `?`, `-`).
 fn tty_device(col: &str) -> Option<String> {
     let ok = !col.is_empty()
